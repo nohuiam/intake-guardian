@@ -1,0 +1,21 @@
+{
+  "server_id": "intake-guardian",
+  "port": 3023,
+  "http_port": 8023,
+  "websocket_port": 9023,
+  "heartbeat": {
+    "interval": 30000,
+    "timeout": 90000
+  },
+  "accepted_signals": [
+    "0x01", "0x02", "0x04", "0x05", "0x10", "0x20", "0x21", "0xF0", "0xFF"
+  ],
+  "connections": {
+    "consciousness-mcp": { "host": "localhost", "port": 3028 },
+    "bonzai-bloat-buster": { "host": "localhost", "port": 3008 },
+    "catasorter": { "host": "localhost", "port": 3005 },
+    "knowledge-curator": { "host": "localhost", "port": 3017 },
+    "quartermaster": { "host": "localhost", "port": 3002 },
+    "safe-batch-processor": { "host": "localhost", "port": 3022 }
+  }
+}
