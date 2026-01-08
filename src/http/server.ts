@@ -12,6 +12,9 @@ import { getIntakeService } from '../services/intake-service.js';
 import { getDatabase } from '../database/schema.js';
 import { checkHealth as checkBBBHealth } from '../services/bbb-client.js';
 
+// SECURITY: API key for HTTP authentication
+const API_KEY = process.env.INTAKE_API_KEY;
+
 // Input validation schemas (matching tool schemas)
 const CheckInputSchema = z.object({
   content: z.string().optional(),
@@ -74,15 +77,32 @@ export class HttpServer {
   }
 
   private setupMiddleware(): void {
-    this.app.use(express.json());
+    this.app.use(express.json({ limit: '1mb' }));
 
     // CORS headers
     this.app.use((req: Request, res: Response, next: NextFunction) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
       if (req.method === 'OPTIONS') {
         res.sendStatus(200);
+        return;
+      }
+      next();
+    });
+
+    // SECURITY: API key authentication for all /api/* routes
+    this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+      // Skip auth if no API key is configured (development mode)
+      if (!API_KEY) {
+        console.error('[HTTP] WARNING: No INTAKE_API_KEY set - authentication disabled');
+        next();
+        return;
+      }
+
+      const providedKey = req.headers['x-api-key'] as string;
+      if (!providedKey || providedKey !== API_KEY) {
+        res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
         return;
       }
       next();
