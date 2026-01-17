@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { getIntakeService } from '../services/intake-service.js';
 import { getDatabase } from '../database/schema.js';
 import { checkHealth as checkBBBHealth } from '../services/bbb-client.js';
+import { TOOLS, TOOL_HANDLERS } from '../index.js';
 
 // SECURITY: API key for HTTP authentication
 const API_KEY = process.env.INTAKE_API_KEY;
@@ -220,6 +221,35 @@ export class HttpServer {
         res.json(result);
       } catch (error) {
         res.status(400).json({ error: sanitizeError(error) });
+      }
+    });
+
+    // GET /api/tools - List all MCP tools (for bop-gateway)
+    this.app.get('/api/tools', (req: Request, res: Response) => {
+      const toolList = TOOLS.map(t => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema
+      }));
+      res.json({ tools: toolList, count: toolList.length });
+    });
+
+    // POST /api/tools/:toolName - Execute tool via HTTP (for bop-gateway)
+    this.app.post('/api/tools/:toolName', async (req: Request, res: Response) => {
+      const { toolName } = req.params;
+      const args = req.body.arguments || req.body;
+
+      const handler = TOOL_HANDLERS[toolName];
+      if (!handler) {
+        res.status(404).json({ success: false, error: `Tool '${toolName}' not found` });
+        return;
+      }
+
+      try {
+        const result = await handler(args);
+        res.json({ success: true, result });
+      } catch (error) {
+        res.status(500).json({ success: false, error: sanitizeError(error) });
       }
     });
   }

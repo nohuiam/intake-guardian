@@ -35,6 +35,24 @@ import { ADMIT_CONTENT_TOOL, handleAdmitContent } from './tools/admit-content.js
 import { GET_HISTORY_TOOL, handleGetHistory } from './tools/get-history.js';
 import { CONFIGURE_THRESHOLDS_TOOL, handleConfigureThresholds } from './tools/configure.js';
 
+// Tools array (exported for HTTP gateway)
+export const TOOLS = [
+  CHECK_CONTENT_TOOL,
+  CHECK_FILE_TOOL,
+  ADMIT_CONTENT_TOOL,
+  GET_HISTORY_TOOL,
+  CONFIGURE_THRESHOLDS_TOOL
+];
+
+// Tool handlers map (exported for HTTP gateway)
+export const TOOL_HANDLERS: Record<string, (args: any) => any> = {
+  check_content: handleCheckContent,
+  check_file: handleCheckFile,
+  admit_content: handleAdmitContent,
+  get_intake_history: handleGetHistory,
+  configure_thresholds: handleConfigureThresholds
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
