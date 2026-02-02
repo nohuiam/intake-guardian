@@ -3,9 +3,12 @@
  *
  * Port: 3023
  * Handles UDP mesh communication for Intake Guardian.
+ * Updated to use @bop/interlock shared package.
  */
 
 import dgram from 'dgram';
+import { InterlockSocket as SharedSocket } from '@bop/interlock';
+import type { InterlockConfig as SharedConfig, Signal, RemoteInfo } from '@bop/interlock';
 import { encode, decode, SIGNAL_TYPES, getSignalName, type DecodedMessage } from './protocol.js';
 import { SignalHandlers } from './handlers.js';
 import { Tumbler } from './tumbler.js';
@@ -18,7 +21,7 @@ export interface InterLockConfig {
 }
 
 export class InterLockSocket {
-  private socket: dgram.Socket | null = null;
+  private sharedSocket: SharedSocket | null = null;
   private config: InterLockConfig;
   private handlers: SignalHandlers;
   private tumbler: Tumbler;
@@ -31,45 +34,46 @@ export class InterLockSocket {
   }
 
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.socket = dgram.createSocket('udp4');
+    // Transform peers to shared package format
+    const peersConfig: Record<string, { host: string; port: number }> = {};
+    for (const peer of this.config.peers) {
+      peersConfig[peer.name] = { host: peer.host || '127.0.0.1', port: peer.port };
+    }
 
-      this.socket.on('error', (err) => {
-        console.error('[InterLock] Socket error:', err.message);
-        if (!this.isRunning) {
-          reject(err);
-        }
-      });
+    const sharedConfig: SharedConfig = {
+      port: this.config.port,
+      serverId: this.config.serverId,
+      peers: peersConfig,
+      heartbeat: {
+        interval: 30000,
+        timeout: 90000
+      }
+    };
 
-      this.socket.on('message', (msg, rinfo) => {
-        this.handleMessage(msg, rinfo);
-      });
+    this.sharedSocket = new SharedSocket(sharedConfig);
 
-      this.socket.on('listening', () => {
-        const addr = this.socket!.address();
-        console.error(`[InterLock] Listening on port ${addr.port}`);
-        this.isRunning = true;
-        resolve();
-      });
+    // Listen for signals from shared socket
+    this.sharedSocket.on('signal', (signal: Signal, rinfo: RemoteInfo) => {
+      // Convert to local DecodedMessage format
+      const decoded: DecodedMessage = {
+        type: signal.type,
+        serverId: signal.data.serverId as string,
+        timestamp: signal.timestamp,
+        data: signal.data
+      };
 
-      this.socket.bind(this.config.port);
+      // Check whitelist
+      if (!this.tumbler.isAllowed(decoded.type)) {
+        return;
+      }
+
+      // Route to handlers
+      this.handlers.route(decoded, rinfo as dgram.RemoteInfo);
     });
-  }
 
-  private handleMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
-    const decoded = decode(msg);
-    if (!decoded) {
-      console.error(`[InterLock] Failed to decode message from ${rinfo.address}:${rinfo.port}`);
-      return;
-    }
-
-    // Check whitelist
-    if (!this.tumbler.isAllowed(decoded.type)) {
-      return;
-    }
-
-    // Route to handlers
-    this.handlers.route(decoded, rinfo);
+    await this.sharedSocket.start();
+    console.error(`[InterLock] Listening on port ${this.config.port}`);
+    this.isRunning = true;
   }
 
   /**
@@ -89,43 +93,43 @@ export class InterLockSocket {
   /**
    * Send a signal to a specific peer
    */
-  send(peerName: string, type: number, data?: unknown): void {
-    const peer = this.config.peers.find(p => p.name === peerName);
-    if (!peer) {
-      console.error(`[InterLock] Unknown peer: ${peerName}`);
-      return;
+  async send(peerName: string, type: number, data?: unknown): Promise<void> {
+    if (!this.sharedSocket) return;
+
+    try {
+      await this.sharedSocket.sendTo(peerName, {
+        type,
+        data: {
+          serverId: this.config.serverId,
+          ...(data as Record<string, unknown> || {})
+        }
+      });
+    } catch (err) {
+      console.error(`[InterLock] Send error to ${peerName}:`, (err as Error).message);
     }
-
-    const message = encode({
-      type,
-      serverId: this.config.serverId,
-      data
-    });
-
-    this.socket?.send(message, peer.port, peer.host || 'localhost', (err) => {
-      if (err) {
-        console.error(`[InterLock] Send error to ${peerName}:`, err.message);
-      }
-    });
   }
 
   /**
    * Broadcast a signal to all peers
    */
-  broadcast(type: number, data?: unknown): void {
-    for (const peer of this.config.peers) {
-      this.send(peer.name, type, data);
-    }
+  async broadcast(type: number, data?: unknown): Promise<void> {
+    if (!this.sharedSocket) return;
+
+    await this.sharedSocket.broadcast({
+      type,
+      data: {
+        serverId: this.config.serverId,
+        ...(data as Record<string, unknown> || {})
+      }
+    });
   }
 
   /**
-   * Send heartbeat to all peers
+   * Send heartbeat to all peers (handled by shared socket automatically)
    */
   sendHeartbeat(): void {
-    this.broadcast(SIGNAL_TYPES.HEARTBEAT, {
-      server: this.config.serverId,
-      timestamp: Date.now()
-    });
+    // Heartbeat is now handled automatically by the shared socket
+    // This method kept for backward compatibility
   }
 
   /**
@@ -167,6 +171,13 @@ export class InterLockSocket {
   }
 
   /**
+   * Get socket statistics from shared package
+   */
+  getSocketStats() {
+    return this.sharedSocket?.getStats() || null;
+  }
+
+  /**
    * Get server ID
    */
   getServerId(): string {
@@ -174,17 +185,11 @@ export class InterLockSocket {
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
-      if (this.socket) {
-        this.handlers.clear();
-        this.socket.close(() => {
-          console.error('[InterLock] Socket closed');
-          this.isRunning = false;
-          resolve();
-        });
-      } else {
-        resolve();
-      }
-    });
+    if (this.sharedSocket) {
+      this.handlers.clear();
+      await this.sharedSocket.stop();
+      console.error('[InterLock] Socket closed');
+      this.isRunning = false;
+    }
   }
 }
