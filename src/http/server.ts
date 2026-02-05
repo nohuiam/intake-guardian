@@ -8,6 +8,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { Server } from 'http';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import { getIntakeService } from '../services/intake-service.js';
 import { getDatabase } from '../database/schema.js';
 import { checkHealth as checkBBBHealth } from '../services/bbb-client.js';
@@ -15,6 +16,20 @@ import { TOOLS, TOOL_HANDLERS } from '../index.js';
 
 // SECURITY: API key for HTTP authentication
 const API_KEY = process.env.INTAKE_API_KEY;
+
+// Extend Express Request for request ID tracing
+declare global {
+  namespace Express {
+    interface Request {
+      requestId?: string;
+    }
+  }
+}
+
+// In-memory rate limiting (Linus audit compliance)
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const RATE_LIMIT_MAX = 100;
 
 // Input validation schemas (matching tool schemas)
 const CheckInputSchema = z.object({
@@ -92,6 +107,35 @@ export class HttpServer {
       next();
     });
 
+    // Request ID tracing middleware (Linus audit compliance)
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      const requestId = (req.headers['x-request-id'] as string) || randomUUID();
+      req.requestId = requestId;
+      res.setHeader('X-Request-ID', requestId);
+      next();
+    });
+
+    // Rate limiting middleware (Linus audit compliance)
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      const clientIp = req.ip || 'unknown';
+      const now = Date.now();
+      const entry = rateLimitMap.get(clientIp);
+
+      if (!entry || now > entry.resetTime) {
+        rateLimitMap.set(clientIp, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+        next();
+        return;
+      }
+
+      if (entry.count >= RATE_LIMIT_MAX) {
+        res.status(429).json({ error: 'Too many requests', retryAfter: Math.ceil((entry.resetTime - now) / 1000) });
+        return;
+      }
+
+      entry.count++;
+      next();
+    });
+
     // SECURITY: API key authentication for all /api/* routes
     this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
       // Skip auth if no API key is configured (development mode)
@@ -124,6 +168,35 @@ export class HttpServer {
         bbb_connected: bbbHealthy,
         stats
       });
+    });
+
+    // Readiness check (Linus audit compliance - checks DB + BBB connectivity)
+    this.app.get('/health/ready', async (req: Request, res: Response) => {
+      try {
+        const db = getDatabase();
+        const stats = db.getStats();
+        const bbbHealthy = await checkBBBHealth();
+
+        const ready = stats !== undefined && bbbHealthy;
+        res.status(ready ? 200 : 503).json({
+          ready,
+          server: 'intake-guardian',
+          checks: {
+            database: stats !== undefined,
+            bbb_connection: bbbHealthy
+          }
+        });
+      } catch (error) {
+        res.status(503).json({
+          ready: false,
+          server: 'intake-guardian',
+          checks: {
+            database: false,
+            bbb_connection: false
+          },
+          error: 'Service not ready'
+        });
+      }
     });
 
     // Stats
